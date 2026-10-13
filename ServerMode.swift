@@ -314,10 +314,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateUI() {
-        // The Xserve is drawn light so its outline weighs about the same as the laptop's.
+        // The Xserve glyph is drawn smaller than the laptop; at 15 pt it fills the same box.
         let symbol = status.serverMode ? "xserve" : "laptopcomputer"
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Server Mode")?
-            .withSymbolConfiguration(.init(pointSize: 13, weight: status.serverMode ? .light : .regular))
+            .withSymbolConfiguration(.init(pointSize: status.serverMode ? 15 : 13, weight: .regular))
         image?.isTemplate = true
         statusItem.button?.image = image
         rebuildMenu()
