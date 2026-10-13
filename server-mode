@@ -1,0 +1,199 @@
+#!/bin/bash
+# Server mode for a MacBook: stays awake with the lid closed while on power.
+#
+#   server-mode on       keep the Mac awake while on AC power (needs sudo)
+#   server-mode off      restore normal sleep (needs sudo)
+#   server-mode status   print current state and readiness checks (no sudo)
+#   server-mode guard    run by the LaunchDaemon: block sleep on AC, allow it on battery
+
+set -euo pipefail
+
+STATE_DIR="/Library/Application Support/ServerMode"
+BACKUP="$STATE_DIR/pmset-ac.backup"
+ENABLED="$STATE_DIR/enabled"
+# Root-owned copy for the daemon, so it never runs a user-writable script as root.
+GUARD_SCRIPT="$STATE_DIR/server-mode"
+LABEL="com.sketchpiece.servermode.guard"
+PLIST="/Library/LaunchDaemons/$LABEL.plist"
+# AC power settings that server mode overrides; the originals are saved on "on".
+KEYS=(sleep disksleep displaysleep standby powernap womp tcpkeepalive)
+
+is_on() {
+  [[ -f "$ENABLED" ]]
+}
+
+sleep_disabled() {
+  pmset -g | grep -Eq '^ *SleepDisabled[[:space:]]+1'
+}
+
+on_ac() {
+  pmset -g ps | head -1 | grep -q "'AC Power'"
+}
+
+lid_closed() {
+  ioreg -r -k AppleClamshellState -d 1 | grep -q '"AppleClamshellState" = Yes'
+}
+
+port_open() {
+  nc -z -G 1 127.0.0.1 "$1" >/dev/null 2>&1
+}
+
+need_root() {
+  if [[ $EUID -ne 0 ]]; then
+    exec sudo "$0" "$@"
+  fi
+}
+
+# Prints "key value" for each of KEYS from the AC Power section of pmset.
+current_ac_values() {
+  pmset -g custom | awk -v keys="${KEYS[*]}" '
+    BEGIN { n = split(keys, k, " "); for (i = 1; i <= n; i++) want[k[i]] = 1 }
+    /^AC Power:/ { ac = 1; next }
+    /^[A-Za-z].*:$/ { ac = 0 }
+    ac && ($1 in want) { print $1, $2 }
+  '
+}
+
+cmd_on() {
+  need_root on
+  if is_on; then
+    # Reinstall the guard anyway, so an updated script reaches the daemon.
+    install_guard
+    echo "Server mode is already on."
+    return
+  fi
+  mkdir -p "$STATE_DIR"
+  current_ac_values >"$BACKUP"
+  pmset -c sleep 0 disksleep 0 displaysleep 0 standby 0 powernap 0 womp 1 tcpkeepalive 1
+  touch "$ENABLED"
+  install_guard
+  echo "Server mode ON: on AC power the Mac will not sleep, even with the lid closed."
+}
+
+# disablesleep also applies on battery, so a daemon flips it with the power source.
+install_guard() {
+  install -m 755 -o root -g wheel "$0" "$GUARD_SCRIPT"
+  cat >"$PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>$GUARD_SCRIPT</string><string>guard</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>10</integer>
+</dict>
+</plist>
+PLIST
+  chmod 644 "$PLIST"
+  launchctl bootout system "$PLIST" 2>/dev/null || true
+  launchctl bootstrap system "$PLIST"
+}
+
+cmd_guard() {
+  if ! is_on; then
+    return
+  fi
+  if on_ac; then
+    sleep_disabled || pmset -a disablesleep 1
+  elif sleep_disabled; then
+    pmset -a disablesleep 0
+    # Unplugged with the lid already closed: nothing else will trigger lid sleep.
+    if lid_closed; then
+      pmset sleepnow
+    fi
+  fi
+}
+
+cmd_off() {
+  need_root off
+  rm -f "$ENABLED"
+  launchctl bootout system "$PLIST" 2>/dev/null || true
+  rm -f "$PLIST" "$GUARD_SCRIPT"
+  pmset -a disablesleep 0
+  if [[ -f "$BACKUP" ]]; then
+    local args=()
+    while read -r key value; do
+      [[ -n "$key" ]] && args+=("$key" "$value")
+    done <"$BACKUP"
+    if ((${#args[@]})); then
+      pmset -c "${args[@]}"
+    fi
+    rm -f "$BACKUP"
+  fi
+  echo "Server mode OFF: normal sleep restored."
+}
+
+# Prefer the app binary: the /usr/local/bin/tailscale wrapper is a shell script without exec,
+# so killing it on timeout would leave the real process running.
+tailscale_bin() {
+  if [[ -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]]; then
+    echo /Applications/Tailscale.app/Contents/MacOS/Tailscale
+  elif command -v tailscale >/dev/null 2>&1; then
+    command -v tailscale
+  fi
+}
+
+# Runs a command, killing it after the given number of seconds. macOS has no timeout(1).
+with_timeout() {
+  local seconds=$1
+  shift
+  "$@" &
+  local pid=$!
+  (sleep "$seconds" && kill "$pid") >/dev/null 2>&1 &
+  local killer=$!
+  local rc=0
+  wait "$pid" 2>/dev/null || rc=$?
+  kill "$killer" 2>/dev/null || true
+  return "$rc"
+}
+
+cmd_status() {
+  local mode ssh vnc power
+  mode=$(is_on && echo on || echo off)
+  ssh=$(port_open 22 && echo on || echo off)
+  vnc=$(port_open 5900 && echo on || echo off)
+  power=$(pmset -g batt | head -1 | sed -E "s/.*'(.*)'.*/\1/")
+  echo "server-mode=$mode"
+  echo "sleep-disabled=$(sleep_disabled && echo on || echo off)"
+  echo "ssh=$ssh"
+  echo "screen-sharing=$vnc"
+  echo "power=$power"
+
+  # Things that get in the way of an unattended GUI session.
+  # Seconds before the screen saver starts; 0 means never. Unset means the system default.
+  echo "screensaver=$(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null || echo default)"
+  echo "filevault=$(fdesetup isactive >/dev/null 2>&1 && echo on || echo off)"
+  # App Nap throttles the agent apps once their windows are hidden, e.g. with the lid closed.
+  # Lists the installed ones that still have it on, or "off" when none do.
+  local app id napping=()
+  for app in "T3 Code (Alpha)" Helm; do
+    id=$(defaults read "/Applications/$app.app/Contents/Info" CFBundleIdentifier 2>/dev/null) || continue
+    [[ $(defaults read "$id" NSAppSleepDisabled 2>/dev/null) == 1 ]] || napping+=("$app")
+  done
+  echo "app-nap=$( ((${#napping[@]})) && (IFS=,; echo "${napping[*]}") || echo off)"
+
+  local ts state ip=""
+  ts=$(tailscale_bin)
+  if [[ -z "$ts" ]]; then
+    state=missing
+  else
+    # The CLI can hang while the Tailscale app is starting or updating.
+    state=$(with_timeout 3 "$ts" status --json 2>/dev/null | plutil -extract BackendState raw -o - - 2>/dev/null || echo stopped)
+    [[ "$state" == Running ]] && ip=$(with_timeout 3 "$ts" ip -4 2>/dev/null | head -1 || true)
+  fi
+  echo "tailscale=$state"
+  echo "tailscale-ip=$ip"
+}
+
+case "${1:-status}" in
+  on) cmd_on ;;
+  off) cmd_off ;;
+  status) cmd_status ;;
+  guard) cmd_guard ;;
+  *)
+    echo "usage: server-mode on|off|status" >&2
+    exit 1
+    ;;
+esac
