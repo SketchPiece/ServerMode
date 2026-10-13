@@ -1,4 +1,5 @@
 import AppKit
+import IOKit
 import ServiceManagement
 import UserNotifications
 
@@ -48,6 +49,7 @@ final class VirtualDisplayController {
     private(set) var resolution: Resolution?
 
     var isOn: Bool { display != nil }
+    var displayID: CGDirectDisplayID? { display?.displayID }
 
     func start(_ resolution: Resolution) -> Bool {
         stop()
@@ -92,23 +94,77 @@ final class VirtualDisplayController {
     }
 }
 
+/// Off, always on, or on only while the lid is closed and no other screen is connected.
+enum VirtualDisplayMode: String {
+    case off, on, auto
+}
+
 /// True when there is a screen other than the built-in one (a monitor, a dummy plug or our virtual display).
-func hasNonBuiltinDisplay() -> Bool {
+func hasNonBuiltinDisplay(excluding excluded: CGDirectDisplayID? = nil) -> Bool {
     var count: UInt32 = 0
     CGGetActiveDisplayList(0, nil, &count)
     var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
     CGGetActiveDisplayList(count, &ids, &count)
-    return ids.contains { CGDisplayIsBuiltin($0) == 0 }
+    return ids.contains { CGDisplayIsBuiltin($0) == 0 && $0 != excluded }
+}
+
+func isLidClosed() -> Bool {
+    let rootDomain = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+    guard rootDomain != 0 else { return false }
+    defer { IOObjectRelease(rootDomain) }
+    let state = IORegistryEntryCreateCFProperty(rootDomain, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0)
+    return state?.takeRetainedValue() as? Bool ?? false
+}
+
+/// Calls `onChange` on the main queue when the lid opens or closes or a screen comes or goes.
+/// Bursts of events are coalesced, and the clamshell state is read a moment later so it has settled.
+final class DisplayWatcher {
+    private let onChange: () -> Void
+    private var notifyPort: IONotificationPortRef?
+    private var notifier: io_object_t = 0
+    private var pending: DispatchWorkItem?
+
+    init(onChange: @escaping () -> Void) {
+        self.onChange = onChange
+        let context = Unmanaged.passUnretained(self).toOpaque()
+
+        // The root power domain sends a message on every lid open and close.
+        let rootDomain = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        if rootDomain != 0, let port = IONotificationPortCreate(kIOMainPortDefault) {
+            IONotificationPortSetDispatchQueue(port, DispatchQueue.main)
+            notifyPort = port
+            IOServiceAddInterestNotification(port, rootDomain, kIOGeneralInterest, { context, _, _, _ in
+                context.map { Unmanaged<DisplayWatcher>.fromOpaque($0).takeUnretainedValue().schedule() }
+            }, context, &notifier)
+            IOObjectRelease(rootDomain)
+        }
+
+        CGDisplayRegisterReconfigurationCallback({ _, flags, context in
+            guard !flags.contains(.beginConfigurationFlag) else { return }
+            context.map { Unmanaged<DisplayWatcher>.fromOpaque($0).takeUnretainedValue().schedule() }
+        }, context)
+    }
+
+    private func schedule() {
+        DispatchQueue.main.async {
+            self.pending?.cancel()
+            let work = DispatchWorkItem(block: self.onChange)
+            self.pending = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+        }
+    }
 }
 
 // MARK: - App
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let virtualDisplayKey = "virtualDisplay"
+    private static let virtualDisplayModeKey = "virtualDisplayMode"
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let menu = NSMenu()
     private let virtualDisplay = VirtualDisplayController()
+    private var displayWatcher: DisplayWatcher?
     private var status = Status()
     private var isRefreshing = false
     private var needsRefresh = false
@@ -126,15 +182,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
         statusItem.menu = menu
-        if let key = UserDefaults.standard.string(forKey: Self.virtualDisplayKey),
-           let resolution = Resolution(key: key) {
-            _ = virtualDisplay.start(resolution)
-        }
+        displayWatcher = DisplayWatcher { [weak self] in self?.applyVirtualDisplayMode() }
+        applyVirtualDisplayMode()
         updateUI()
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             self?.refresh()
+            // In case a lid or display event was missed.
+            self?.applyVirtualDisplayMode()
         }
+    }
+
+    // MARK: Virtual display
+
+    /// Before Auto existed, a saved resolution alone meant "on".
+    private var virtualDisplayMode: VirtualDisplayMode {
+        get {
+            if let raw = UserDefaults.standard.string(forKey: Self.virtualDisplayModeKey),
+               let mode = VirtualDisplayMode(rawValue: raw) {
+                return mode
+            }
+            return UserDefaults.standard.string(forKey: Self.virtualDisplayKey) == nil ? .off : .on
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: Self.virtualDisplayModeKey) }
+    }
+
+    private var virtualDisplayResolution: Resolution {
+        UserDefaults.standard.string(forKey: Self.virtualDisplayKey).flatMap(Resolution.init(key:))
+            ?? Resolution.presets[1]
+    }
+
+    /// Auto wants the display only while the lid is closed and nothing else gives the Mac a screen.
+    private var wantsVirtualDisplay: Bool {
+        switch virtualDisplayMode {
+        case .off: return false
+        case .on: return true
+        case .auto: return isLidClosed() && !hasNonBuiltinDisplay(excluding: virtualDisplay.displayID)
+        }
+    }
+
+    /// Starts or stops the display to match the mode. Returns false if macOS refused to create it.
+    @discardableResult
+    private func applyVirtualDisplayMode() -> Bool {
+        defer { updateUI() }
+        let resolution = virtualDisplayResolution
+        guard wantsVirtualDisplay else {
+            if virtualDisplay.isOn { virtualDisplay.stop() }
+            return true
+        }
+        guard virtualDisplay.resolution != resolution else { return true }
+        return virtualDisplay.start(resolution)
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -283,18 +380,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func virtualDisplayItem() -> NSMenuItem {
-        let title = virtualDisplay.resolution.map { "Virtual Display: \($0.label)" } ?? "Virtual Display: Off"
+        let mode = virtualDisplayMode
+        let resolution = virtualDisplayResolution
+        let title: String
+        switch mode {
+        case .off: title = "Virtual Display: Off"
+        case .on: title = "Virtual Display: \(resolution.label)"
+        case .auto: title = "Virtual Display: Auto, \(virtualDisplay.isOn ? resolution.label : "Standing By")"
+        }
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         let submenu = NSMenu()
 
-        let off = action("Off", #selector(selectVirtualDisplay(_:)))
-        off.state = virtualDisplay.isOn ? .off : .on
-        submenu.addItem(off)
-        for resolution in Resolution.presets {
-            let preset = action(resolution.label, #selector(selectVirtualDisplay(_:)))
-            preset.representedObject = resolution.key
-            preset.state = virtualDisplay.resolution == resolution ? .on : .off
-            submenu.addItem(preset)
+        for (option, label) in [(VirtualDisplayMode.off, "Off"), (.on, "On"), (.auto, "Auto: On When the Lid Is Closed")] {
+            let row = action(label, #selector(selectVirtualDisplayMode(_:)))
+            row.representedObject = option.rawValue
+            row.state = mode == option ? .on : .off
+            submenu.addItem(row)
+        }
+        submenu.addItem(.separator())
+        for preset in Resolution.presets {
+            let row = action(preset.label, #selector(selectVirtualDisplayResolution(_:)))
+            row.representedObject = preset.key
+            row.state = preset == resolution ? .on : .off
+            submenu.addItem(row)
         }
         item.submenu = submenu
         return item
@@ -332,7 +440,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         check(status.power == "AC Power", status.power == "AC Power" ? "On AC Power" : "On Battery")
-        let hasDisplay = hasNonBuiltinDisplay()
+        // In Auto the virtual display is only there while the lid is closed, which is enough.
+        let hasDisplay = virtualDisplayMode == .auto || hasNonBuiltinDisplay()
         check(hasDisplay, hasDisplay ? "Display for Closed Lid" : "No Display for Closed Lid: Turn On Virtual Display")
         check(status.ssh, status.ssh ? "SSH" : "SSH Off", #selector(openSharing))
         check(status.screenSharing, status.screenSharing ? "Screen Sharing" : "Screen Sharing Off", #selector(openSharing))
@@ -444,17 +553,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refresh()
     }
 
-    @objc private func selectVirtualDisplay(_ sender: NSMenuItem) {
-        if let key = sender.representedObject as? String, let resolution = Resolution(key: key) {
-            if virtualDisplay.start(resolution) {
-                UserDefaults.standard.set(key, forKey: Self.virtualDisplayKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: Self.virtualDisplayKey)
-                showAlert("Couldn’t create the virtual display", "macOS rejected the display settings.")
-            }
-        } else {
-            virtualDisplay.stop()
-            UserDefaults.standard.removeObject(forKey: Self.virtualDisplayKey)
+    @objc private func selectVirtualDisplayMode(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let mode = VirtualDisplayMode(rawValue: raw) else { return }
+        virtualDisplayMode = mode
+        applyVirtualDisplay()
+    }
+
+    /// Picking a resolution while the display is off also turns it on.
+    @objc private func selectVirtualDisplayResolution(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String else { return }
+        UserDefaults.standard.set(key, forKey: Self.virtualDisplayKey)
+        if virtualDisplayMode == .off { virtualDisplayMode = .on }
+        applyVirtualDisplay()
+    }
+
+    private func applyVirtualDisplay() {
+        if !applyVirtualDisplayMode() {
+            virtualDisplayMode = .off
+            showAlert("Couldn’t create the virtual display", "macOS rejected the display settings.")
         }
         // Give macOS a moment to add or remove the screen before re-checking.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.updateUI() }
