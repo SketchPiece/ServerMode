@@ -314,10 +314,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateUI() {
-        // The Xserve glyph is drawn smaller than the laptop; at 15 pt it fills the same box.
-        let symbol = status.serverMode ? "xserve" : "laptopcomputer"
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Server Mode")?
-            .withSymbolConfiguration(.init(pointSize: status.serverMode ? 15 : 13, weight: .regular))
+        let image = status.serverMode
+            ? Self.serverIcon
+            : NSImage(systemSymbolName: "laptopcomputer", accessibilityDescription: "Server Mode")
         image?.isTemplate = true
         statusItem.button?.image = image
         rebuildMenu()
@@ -523,6 +522,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.submenu = submenu
         return item
     }
+
+    /// The SF Symbols Xserve, redrawn at the laptop's size with one light and one slot
+    /// instead of its row of tiny dots, which blur together in the menu bar.
+    private static let serverIcon: NSImage = {
+        let image = NSImage(size: NSSize(width: 22, height: 13), flipped: true) { _ in
+            NSColor.black.set()
+            let body = NSBezierPath()
+            body.move(to: NSPoint(x: 2.6, y: 7.2))
+            body.line(to: NSPoint(x: 6.4, y: 2.8))
+            body.line(to: NSPoint(x: 15.6, y: 2.8))
+            body.line(to: NSPoint(x: 19.4, y: 7.2))
+            body.appendArc(from: NSPoint(x: 19.4, y: 11.4), to: NSPoint(x: 11, y: 11.4), radius: 1.6)
+            body.appendArc(from: NSPoint(x: 2.6, y: 11.4), to: NSPoint(x: 2.6, y: 7.2), radius: 1.6)
+            body.close()
+            body.move(to: NSPoint(x: 2.6, y: 7.2))
+            body.line(to: NSPoint(x: 19.4, y: 7.2))
+            body.move(to: NSPoint(x: 13.6, y: 9.3))
+            body.line(to: NSPoint(x: 16.8, y: 9.3))
+            body.lineWidth = 1.15
+            body.lineJoinStyle = .round
+            body.lineCapStyle = .round
+            body.stroke()
+            NSBezierPath(ovalIn: NSRect(x: 4.4, y: 8.5, width: 1.6, height: 1.6)).fill()
+            return true
+        }
+        image.accessibilityDescription = "Server Mode"
+        return image
+    }()
 
     private func symbol(_ name: String, _ color: NSColor) -> NSImage? {
         NSImage(systemSymbolName: name, accessibilityDescription: nil)?
