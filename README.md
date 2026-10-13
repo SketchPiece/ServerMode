@@ -9,7 +9,7 @@ Toggles server mode on a MacBook: plugged in, lid closed, never sleeping. Unplug
 open ~/Applications/ServerMode.app
 ```
 
-A laptop icon means server mode is off, a server rack icon means it's on. The menu has:
+A laptop icon means server mode is off, an Xserve icon means it's on. The menu has:
 
 - **Turn Server Mode On/Off**: asks for your admin password. Shows "paused on battery" while unplugged.
 - **Virtual Display**: an invisible monitor (1280×800, 1440×900 or 1920×1080), so a closed-lid Mac still has a screen for computer use. It replaces the HDMI dummy plug and comes back when the app restarts. **On** keeps it all the time, so with the lid open it extends your desktop and windows can end up on it. **Auto** turns it on only while the lid is closed and no other monitor is connected, and removes it when you open the lid. Look at it through Screen Sharing.

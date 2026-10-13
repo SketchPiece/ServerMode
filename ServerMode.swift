@@ -314,8 +314,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateUI() {
-        let symbol = status.serverMode ? "server.rack" : "laptopcomputer"
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Server Mode")
+        // The Xserve is drawn light so its outline weighs about the same as the laptop's.
+        let symbol = status.serverMode ? "xserve" : "laptopcomputer"
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Server Mode")?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: status.serverMode ? .light : .regular))
         image?.isTemplate = true
         statusItem.button?.image = image
         rebuildMenu()
