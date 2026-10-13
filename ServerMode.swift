@@ -391,7 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         let submenu = NSMenu()
 
-        for (option, label) in [(VirtualDisplayMode.off, "Off"), (.on, "On"), (.auto, "Auto: On When the Lid Is Closed")] {
+        for (option, label) in [(VirtualDisplayMode.off, "Off"), (.on, "On"), (.auto, "Auto: Only with the Lid Closed and No Monitor")] {
             let row = action(label, #selector(selectVirtualDisplayMode(_:)))
             row.representedObject = option.rawValue
             row.state = mode == option ? .on : .off
