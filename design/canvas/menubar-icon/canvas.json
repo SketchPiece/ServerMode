@@ -1,0 +1,71 @@
+{
+ "v": 3,
+ "title": "Server Mode: иконка в меню-баре",
+ "launch": {
+  "view": "canvas"
+ },
+ "pages": [],
+ "boards": {
+  "0-now.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1400,
+   "h": 600,
+   "title": "Сейчас"
+  },
+  "a-macmini.html": {
+   "x": 1480,
+   "y": 0,
+   "w": 1400,
+   "h": 600,
+   "title": "A. Mac mini"
+  },
+  "b-badge.html": {
+   "x": 2960,
+   "y": 0,
+   "w": 1400,
+   "h": 600,
+   "title": "B. Ноутбук + бейдж"
+  },
+  "c-closed.html": {
+   "x": 0,
+   "y": 760,
+   "w": 1400,
+   "h": 600,
+   "title": "C. Закрытая крышка"
+  },
+  "d-light-rack.html": {
+   "x": 1480,
+   "y": 760,
+   "w": 1400,
+   "h": 600,
+   "title": "D. Облегчённая стойка"
+  },
+  "e-xserve.html": {
+   "x": 2960,
+   "y": 760,
+   "w": 1400,
+   "h": 600,
+   "title": "E. Xserve"
+  }
+ },
+ "order": [
+  "0-now.html",
+  "a-macmini.html",
+  "b-badge.html",
+  "c-closed.html",
+  "d-light-rack.html",
+  "e-xserve.html"
+ ],
+ "notes": {
+  "t": {
+   "x": 0,
+   "y": -240,
+   "text": "Server Mode: иконка в меню-баре",
+   "kind": "title1",
+   "maxW": 4360
+  }
+ },
+ "annotations": [],
+ "designSystems": []
+}
