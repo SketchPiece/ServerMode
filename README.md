@@ -121,4 +121,4 @@ If you uninstalled without turning server mode off first, check that `/Library/L
 
 ## License
 
-[MIT](LICENSE) © 2026 Andrew Lubkin
+[MIT](LICENSE) © 2026 Andrew Liubkin
