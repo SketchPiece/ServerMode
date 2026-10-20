@@ -2,7 +2,12 @@
 
 **Turn your MacBook into a headless server with one click: plugged in, lid closed, never sleeping. Unplug it and it's a normal laptop again.**
 
-![Server Mode menu](docs/screenshot.png)
+<p align="center">
+  <img src="docs/menu-battery-care.png" width="49%" alt="Server Mode menu with server mode on and the Battery Care submenu open: charge 80% held at the limit, health 96.4% after 212 cycles, temperature, charge limit options">
+  <img src="docs/menu-checklist.png" width="49%" alt="Server Mode menu with the readiness checklist open: AC power, display for the closed lid, SSH, Screen Sharing, Tailscale stopped, screen saver off, App Nap off, FileVault note">
+</p>
+
+<sub>The real menus, drawn by the app's own AppKit code with made-up status and battery values.</sub>
 
 ## Why
 
